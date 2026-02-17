@@ -1,3 +1,13 @@
+# app.py
+# =============================
+# PAINEL DE TORRES (Streamlit)
+# - Resultado REAL (do algoritmo) no card do topo
+# - Admin pode trocar a base (upload) / demais usuários não
+# - Botão "Gerar kits agora" + cache (não recomputa toda hora)
+# - Abas: simulador + relatórios (kits_resumo, kits_itens, estoque_restante, falha_proximo_kit)
+# - CSS: layout dark + inputs da sidebar com TEXTO ESCURO (legível)
+# =============================
+
 import re
 import io
 import os
@@ -8,8 +18,9 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 
+
 # =============================
-# CONFIG
+# CONFIG GERAL
 # =============================
 st.set_page_config(page_title="Painel de Torres", layout="wide")
 
@@ -32,7 +43,7 @@ RULES = {
 }
 
 PREFIX_DIRECT = ["CJ", "CK", "CO", "ES", "PF", "SEM", "PM"]
-ADJUST_CATS = {"BR_DEMAIS", "CO"}
+ADJUST_CATS = {"BR_DEMAIS", "CO"}  # categorias usadas como "ajuste fino"
 
 DISPLAY_NAME = {
     "CJ": "CJ",
@@ -62,8 +73,9 @@ np.random.seed(SEED)
 # Base default no repo
 DEFAULT_BASE_PATH = "base_ativa.xlsx"
 
+
 # =============================
-# CSS (PowerBI-like)
+# CSS (PowerBI-like + inputs legíveis)
 # =============================
 st.markdown(
     """
@@ -78,9 +90,6 @@ st.markdown(
       --muted:#a7b4c7;
       --accent:#5aa9ff;
       --accent2:#7c5cff;
-      --good:#2ecc71;
-      --warn:#f1c40f;
-      --bad:#e74c3c;
     }
 
     /* App background */
@@ -102,9 +111,6 @@ st.markdown(
       background: linear-gradient(180deg, #0b1220 0%, #070a0f 100%);
       border-right: 1px solid var(--border);
     }
-    section[data-testid="stSidebar"] h1, 
-    section[data-testid="stSidebar"] h2,
-    section[data-testid="stSidebar"] h3 { color: var(--text); }
 
     /* Top bar (custom header) */
     .topbar{
@@ -173,15 +179,36 @@ st.markdown(
       transform: translateY(-1px);
     }
 
-    /* Inputs */
+    /* Inputs (geral) */
     div[data-baseweb="input"] input, textarea{
       background: rgba(255,255,255,0.03) !important;
       border: 1px solid var(--border) !important;
       color: var(--text) !important;
       border-radius: 12px !important;
     }
-    div[data-baseweb="slider"]{
-      padding-top: 8px;
+
+    /* ====== IMPORTANT: Sidebar inputs com texto ESCURO (legível) ====== */
+    section[data-testid="stSidebar"] div[data-baseweb="input"] input{
+      color: #0b0f18 !important;
+      background: rgba(255,255,255,0.90) !important;
+      border: 1px solid rgba(255,255,255,0.18) !important;
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="input"] input::placeholder{
+      color: rgba(11,15,24,0.55) !important;
+    }
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stNumberInput label,
+    section[data-testid="stSidebar"] .stTextInput label{
+      color: rgba(233,238,248,0.90) !important;
+    }
+    section[data-testid="stSidebar"] button[aria-label="Increment"],
+    section[data-testid="stSidebar"] button[aria-label="Decrement"]{
+      background: rgba(255,255,255,0.85) !important;
+      border: 1px solid rgba(255,255,255,0.18) !important;
+    }
+    section[data-testid="stSidebar"] button[aria-label="Increment"] svg,
+    section[data-testid="stSidebar"] button[aria-label="Decrement"] svg{
+      fill: #0b0f18 !important;
     }
 
     /* Dataframe container */
@@ -193,26 +220,22 @@ st.markdown(
       box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     }
 
-    /* Streamlit dataframe tweaks */
     [data-testid="stDataFrame"]{
       border-radius: 12px;
       overflow: hidden;
       border: 1px solid rgba(255,255,255,0.06);
     }
-    /* subtle hover */
     [data-testid="stDataFrame"] tbody tr:hover{
       background: rgba(90,169,255,0.08) !important;
     }
 
-    /* Divider */
     hr { border: 0; height: 1px; background: var(--border); margin: 14px 0; }
-
-    /* Small captions */
     .muted { color: var(--muted); font-size: 13px; }
     </style>
     """,
     unsafe_allow_html=True
 )
+
 
 # =============================
 # AUTH (admin)
@@ -221,9 +244,13 @@ def is_admin_logged() -> bool:
     return bool(st.session_state.get("is_admin", False))
 
 def admin_login_box():
-    # credenciais via secrets (recomendado) OU fallback
-    admin_user = st.secrets.get("ADMIN_USER", "gabriel-oca")
-    admin_pass = st.secrets.get("ADMIN_PASSWORD", "oca380762")
+    # RECOMENDADO: definir via Secrets no Streamlit Cloud:
+    # ADMIN_USER="..."
+    # ADMIN_PASSWORD="..."
+    #
+    # Se não existir secrets, fica um fallback simples (troque para o que desejar)
+    admin_user = st.secrets.get("ADMIN_USER", "admin")
+    admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin")
 
     with st.sidebar:
         st.header("Admin")
@@ -243,6 +270,7 @@ def admin_login_box():
                 st.session_state["is_admin"] = False
                 st.info("Saiu.")
 
+
 # =============================
 # BASE PREP
 # =============================
@@ -252,11 +280,13 @@ def norm_sku(s: str) -> str:
 def assign_category(row) -> str:
     sku = row["Sku_norm"]
 
+    # Correntes por coluna
     if int(row.get("BASE_Corrente_Feminina", 0) or 0) == 1:
         return "C_FEMININO"
     if int(row.get("BASE_Corrente_Masculina", 0) or 0) == 1:
         return "C_MASCULINO"
 
+    # BR por flags
     if sku.startswith("BR"):
         if int(row.get("BASE_Trio", 0) or 0) == 1:
             return "BR_TRIO"
@@ -264,6 +294,7 @@ def assign_category(row) -> str:
             return "BR_GRANDE"
         return "BR_DEMAIS"
 
+    # Prefixos diretos
     for p in PREFIX_DIRECT:
         if sku.startswith(p):
             return p
@@ -310,18 +341,17 @@ def get_active_base() -> tuple[pd.DataFrame, str, bytes]:
     Base ativa:
     - se admin fez upload na sessão: usa st.session_state['base_bytes']
     - senão: usa base_ativa.xlsx do repo
-    Retorna também os bytes para cache do gerador.
     """
     if "base_bytes" in st.session_state and st.session_state["base_bytes"]:
         b = st.session_state["base_bytes"]
         base = load_base_from_bytes(b)
         name = st.session_state.get("base_name", "upload_admin.xlsx")
         return base, name, b
-    else:
-        return load_default_base_from_repo()
+    return load_default_base_from_repo()
+
 
 # =============================
-# CAPACIDADE CORRETA
+# (OPCIONAL) CAPACIDADE TEÓRICA — usado só para info de gargalo
 # =============================
 def by_sku_table(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby(["categoria", "Sku_norm"], as_index=False).agg(
@@ -335,7 +365,6 @@ def max_kits_category_from_stocks(stocks: np.ndarray, m: int) -> int:
     stocks = stocks[stocks > 0]
     if len(stocks) < m:
         return 0
-
     hi = int(stocks.sum() // m)
     lo = 0
 
@@ -363,13 +392,11 @@ def capacity_table_correct(df: pd.DataFrame) -> pd.DataFrame:
             "categoria": cat,
             "Grupo": DISPLAY_NAME.get(cat, cat),
             "min_por_kit": mn,
-            "max_por_kit": (mx if mx is not None else np.inf),
             "skus_unicos": int(sub["Sku_norm"].nunique()),
             "estoque_total": int(sub["Estoque"].sum()),
             "kits_max_cat": int(kits_cat),
         })
     out = pd.DataFrame(rows)
-    out["max_por_kit"] = out["max_por_kit"].replace([np.inf], ["∞"])
     out["gargalo"] = out["kits_max_cat"] == out["kits_max_cat"].min()
     return out.sort_values(["kits_max_cat", "Grupo"], ascending=[True, True])
 
@@ -380,8 +407,9 @@ def kits_possible_overall_correct(df: pd.DataFrame) -> tuple[int, str, pd.DataFr
     gargalo_str = ", ".join(gargalos) if gargalos else "-"
     return kits_max, gargalo_str, t
 
+
 # =============================
-# PREÇO INTELIGENTE + SIMULADOR
+# SIMULADOR DE COMPRA (mantém estratégia e preço sugerido)
 # =============================
 def summarize_category(df: pd.DataFrame):
     bs = by_sku_table(df)
@@ -406,7 +434,6 @@ def summarize_category(df: pd.DataFrame):
         )
 
     cat["min_por_kit"] = cat["categoria"].map(lambda c: RULES[c][0])
-    cat["max_por_kit"] = cat["categoria"].map(lambda c: RULES[c][1] if RULES[c][1] is not None else np.inf)
     return cat, bs
 
 def min_cost_theoretical(bs: pd.DataFrame) -> float:
@@ -510,6 +537,7 @@ def simulator_purchase_table(df: pd.DataFrame, target_kits: int, target_min: flo
     out = pd.concat([out, total_row], ignore_index=True)
     return out, direction, float(min_cost)
 
+
 # =============================
 # EXPORT HELPERS
 # =============================
@@ -527,6 +555,7 @@ def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
 def fmt_brl(x: float) -> str:
     return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+
 # =============================
 # KIT GENERATOR (VALUE-FIRST + TABU + FALHA)
 # =============================
@@ -538,6 +567,7 @@ def build_structures(base: pd.DataFrame):
     pools = {}
     for cat in RULES.keys():
         d = base[base["categoria"] == cat].drop_duplicates("Sku_norm").copy()
+        # VALUE-FIRST: ordena por preço, estoque como desempate
         d.sort_values(["Preco", "Estoque"], ascending=[True, True], inplace=True)
         pools[cat] = d["Sku_norm"].tolist()
 
@@ -559,7 +589,7 @@ def pick_k_skus(cat, k, used, stock, pools):
     cands = [s for s in pools[cat] if stock.get(s, 0) > 0 and s not in used]
     if len(cands) < k:
         return None
-    return cands[:k]
+    return cands[:k]  # mais baratos
 
 def pick_best_fit(cat, used, stock, pools, price, current_total, tmin, tmax):
     max_add = tmax - current_total
@@ -574,10 +604,11 @@ def pick_best_fit(cat, used, stock, pools, price, current_total, tmin, tmax):
     if not cands:
         return None
 
+    # se falta valor, tenta “encaixar” no gap
     if gap > 0:
         return min(cands, key=lambda s: abs(float(price[s]) - gap))
-    else:
-        return min(cands, key=lambda s: objective(current_total + float(price[s]), tmin, tmax))
+    # se já passou do piso, tenta centralizar
+    return min(cands, key=lambda s: objective(current_total + float(price[s]), tmin, tmax))
 
 def greedy_build(stock, pools, price, cat_of, tmin, tmax):
     used = set()
@@ -585,6 +616,7 @@ def greedy_build(stock, pools, price, cat_of, tmin, tmax):
     selected = []
     total = 0.0
 
+    # 1) mínimos
     for cat, (mn, mx) in RULES.items():
         pick = pick_k_skus(cat, mn, used, stock, pools)
         if pick is None:
@@ -595,6 +627,7 @@ def greedy_build(stock, pools, price, cat_of, tmin, tmax):
     if total > tmax:
         return None
 
+    # 2) completar: BR_DEMAIS e CO primeiro (ajuste fino)
     cats_order = ["BR_DEMAIS", "CO"] + [c for c in RULES.keys() if c not in ("BR_DEMAIS", "CO")]
     step = 0
     while total < tmin and step < 1200:
@@ -846,6 +879,10 @@ def diagnose_next_kit(stock, pools, price):
 
     return pd.DataFrame(rows)
 
+
+# =============================
+# CACHE DO GERADOR (relatórios)
+# =============================
 @st.cache_data(show_spinner=False)
 def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits: int) -> dict:
     base = load_base_from_bytes(base_bytes)
@@ -857,7 +894,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
 
     for kit_id in range(1, max_kits + 1):
         best = None
-
         for _ in range(ATTEMPTS_PER_KIT):
             sol = greedy_build(stock, pools, price, cat_of, tmin, tmax)
             if sol is None:
@@ -872,6 +908,7 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
             failure_info = {"kit_que_falhou": kit_id, "motivo": reason}
             break
 
+        # desconta estoque (1 por SKU usado)
         for s in best["skus"]:
             stock[s] -= 1
 
@@ -880,6 +917,7 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
 
     base_lookup = base.drop_duplicates("Sku_norm").set_index("Sku_norm")
 
+    # kits_itens
     rows_items = []
     for k in kits:
         for s in k["skus"]:
@@ -893,6 +931,7 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
             })
     kits_itens = pd.DataFrame(rows_items)
 
+    # kits_resumo
     summary_rows = []
     for k in kits:
         row = {"kit_id": k["kit_id"], "total_preco": float(k["total"]), "qtd_itens": int(len(k["skus"]))}
@@ -901,6 +940,7 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
         summary_rows.append(row)
     kits_resumo = pd.DataFrame(summary_rows)
 
+    # estoque_restante
     estoque_restante = (
         pd.DataFrame([{"Sku_norm": s, "Estoque_restante": q} for s, q in stock.items()])
         .merge(base[["Sku_norm", "Sku", "categoria", "Preco"]].drop_duplicates("Sku_norm"),
@@ -908,6 +948,7 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
         .sort_values(["categoria", "Sku_norm"])
     )
 
+    # falha_proximo_kit
     falha_df = diagnose_next_kit(stock, pools, price)
     if failure_info:
         header = pd.DataFrame([{
@@ -931,6 +972,15 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
     }
 
 # =============================
+# >>>> CONTAGEM REAL PARA O TOPO (mesmo resultado do algoritmo)
+# =============================
+@st.cache_data(show_spinner=False)
+def compute_real_kits_count(base_bytes: bytes, tmin: float, tmax: float, max_kits: int) -> int:
+    reports = generate_kits_reports(base_bytes, tmin, tmax, max_kits)
+    return int(reports.get("qtd_kits", 0))
+
+
+# =============================
 # UI - Sidebar
 # =============================
 admin_login_box()
@@ -942,8 +992,7 @@ with st.sidebar:
 
     st.divider()
     st.header("Simulador de compra")
-    target_kits = st.number_input("Quantidade de torres", min_value=1, value=5, step=1)
-    st.slider(" ", min_value=1, max_value=500, value=int(target_kits), step=1, key="kits_slider")
+    desired_kits = st.slider("Quantidade de torres", min_value=1, max_value=500, value=5, step=1)
 
     st.divider()
     st.header("Geração de kits")
@@ -956,8 +1005,9 @@ with st.sidebar:
         if up is not None:
             st.session_state["base_bytes"] = up.getvalue()
             st.session_state["base_name"] = up.name
-            st.success("Base carregada para esta sessão (não grava no GitHub).")
-            st.info("Para persistir permanentemente, substitua também o arquivo 'base_ativa.xlsx' no repositório.")
+            st.success("Base carregada para esta sessão.")
+            st.info("Para persistir permanentemente, substitua o arquivo 'base_ativa.xlsx' no repositório.")
+
 
 # =============================
 # MAIN
@@ -968,28 +1018,31 @@ except Exception as e:
     st.error(str(e))
     st.stop()
 
-kits_max, gargalo, cap_table = kits_possible_overall_correct(base_df)
+# info de gargalo (teórico, opcional)
+kits_teorico, gargalo, _ = kits_possible_overall_correct(base_df)
+
+# >>>> REAL (o que o algoritmo efetivamente consegue montar)
+kits_real = compute_real_kits_count(base_bytes, float(target_min), float(target_max), int(max_kits))
 
 # Topbar
-c1, c2, c3 = st.columns([2.4, 1.2, 0.8])
+c1, c2 = st.columns([2.6, 1.0])
 with c1:
     st.markdown(
         f"""
         <div class="topbar">
           <div class="topbar-title">PAINEL DE TORRES</div>
           <div class="topbar-sub">
-            Base ativa: <b>{base_name}</b> &nbsp;|&nbsp;
-            Gargalo(s): <b>{gargalo}</b> &nbsp;|&nbsp;
-            Faixa: <b>{fmt_brl(float(target_min))}</b> a <b>{fmt_brl(float(target_max))}</b>
+            Base ativa: <b>{base_name}</b>
+            &nbsp;|&nbsp; Faixa: <b>{fmt_brl(float(target_min))}</b> a <b>{fmt_brl(float(target_max))}</b>
+            &nbsp;|&nbsp; Gargalo(s): <b>{gargalo}</b>
+            &nbsp;|&nbsp; Teórico (estoque): <b>{kits_teorico}</b>
           </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 with c2:
-    st.metric("Quantidade de torres atualmente", kits_max)
-with c3:
-    st.write("")
+    st.metric("Quantidade de torres atualmente", kits_real)
 
 st.markdown("<hr/>", unsafe_allow_html=True)
 
@@ -1005,47 +1058,70 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # TAB 1 - Simulador
 # -----------------------------
 with tab1:
-    left, right = st.columns([1.1, 2.9])
+    left, right = st.columns([1.15, 2.85])
+
+    # simulador sempre recalcula (rápido)
+    sim_table, _, _ = simulator_purchase_table(base_df, int(desired_kits), float(target_min), float(target_max))
 
     with left:
         st.subheader("Ações")
-        target_kits_live = int(st.session_state.get("kits_slider", target_kits))
-        st.markdown('<div class="muted">Altere o número de torres no slider para recalcular a tabela.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="muted">Altere a quantidade de torres na sidebar para recalcular a tabela.</div>', unsafe_allow_html=True)
 
-        sim_table, _, _ = simulator_purchase_table(base_df, target_kits_live, float(target_min), float(target_max))
-        st.download_button("Baixar Simulador (Excel)", data=df_to_excel_bytes({"simulador_compra": sim_table}), file_name="simulador_compra.xlsx")
-        st.download_button("Baixar Simulador (CSV)", data=df_to_csv_bytes(sim_table), file_name="simulador_compra.csv")
+        st.download_button(
+            "Baixar Simulador (Excel)",
+            data=df_to_excel_bytes({"simulador_compra": sim_table}),
+            file_name="simulador_compra.xlsx",
+        )
+        st.download_button(
+            "Baixar Simulador (CSV)",
+            data=df_to_csv_bytes(sim_table),
+            file_name="simulador_compra.csv",
+        )
 
         st.divider()
         st.subheader("Gerar kits")
         st.markdown('<div class="muted">Gera os relatórios abaixo usando o algoritmo (value-first + tabu).</div>', unsafe_allow_html=True)
 
         if st.button("Gerar kits agora"):
-            st.session_state["last_gen"] = generate_kits_reports(base_bytes, float(target_min), float(target_max), int(max_kits))
+            st.session_state["last_gen"] = generate_kits_reports(
+                base_bytes, float(target_min), float(target_max), int(max_kits)
+            )
             st.success(f"Kits gerados: {st.session_state['last_gen']['qtd_kits']}")
+
+        if "last_gen" in st.session_state:
+            st.info(f"Kits gerados: {st.session_state['last_gen']['qtd_kits']}")
 
         if st.button("Limpar cache dos kits"):
             if "last_gen" in st.session_state:
                 del st.session_state["last_gen"]
             generate_kits_reports.clear()
-            st.info("Cache limpo.")
+            compute_real_kits_count.clear()
+            st.info("Cache limpo (kits + métrica do topo).")
 
     with right:
         st.subheader("Simulador de compra")
 
-        sim_table, _, _ = simulator_purchase_table(base_df, target_kits_live, float(target_min), float(target_max))
         display_df = sim_table.copy()
-        display_df["Índice faltante por grupo"] = display_df["Índice faltante por grupo"].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "")
-        display_df["Custo de reposição"] = display_df["Custo de reposição"].apply(lambda x: fmt_brl(x) if pd.notna(x) else "")
-        display_df["Preço sugerido (de)"] = display_df["Preço sugerido (de)"].apply(lambda x: fmt_brl(x) if pd.notna(x) else "")
-        display_df["Preço sugerido (até)"] = display_df["Preço sugerido (até)"].apply(lambda x: fmt_brl(x) if pd.notna(x) else "")
+        display_df["Índice faltante por grupo"] = display_df["Índice faltante por grupo"].apply(
+            lambda x: f"{x*100:.2f}%" if pd.notna(x) else ""
+        )
+        display_df["Custo de reposição"] = display_df["Custo de reposição"].apply(
+            lambda x: fmt_brl(x) if pd.notna(x) else ""
+        )
+        display_df["Preço sugerido (de)"] = display_df["Preço sugerido (de)"].apply(
+            lambda x: fmt_brl(x) if pd.notna(x) else ""
+        )
+        display_df["Preço sugerido (até)"] = display_df["Preço sugerido (até)"].apply(
+            lambda x: fmt_brl(x) if pd.notna(x) else ""
+        )
 
         st.markdown('<div class="dataframe-shell">', unsafe_allow_html=True)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
+
 # -----------------------------
-# RELATÓRIOS
+# RELATÓRIOS (gerados pelo botão)
 # -----------------------------
 def render_report(tab, key: str, title: str):
     with tab:
@@ -1060,7 +1136,7 @@ def render_report(tab, key: str, title: str):
             st.warning("Relatório não disponível.")
             return
 
-        col_a, col_b, col_c = st.columns([1, 1, 2])
+        col_a, col_b = st.columns([1, 1])
         with col_a:
             st.download_button("Baixar Excel", data=df_to_excel_bytes({key: df}), file_name=f"{key}.xlsx")
         with col_b:
