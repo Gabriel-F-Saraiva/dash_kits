@@ -51,9 +51,9 @@ st.markdown(
     """
     <style>
     /* fundo */
-    .stApp { background: #0b0b0b; }
+    .stApp { background: #088EA8; }
     /* textos */
-    html, body, [class*="css"]  { color: #EDEDED; }
+    html, body, [class*="css"]  { color: #020024; }
     /* remove "padding" gigante do topo */
     .block-container { padding-top: 1.0rem; }
     /* cards / metric */
