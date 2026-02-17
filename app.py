@@ -1,11 +1,12 @@
 # app.py
 # =============================
 # PAINEL DE TORRES (Streamlit)
-# - Resultado REAL (do algoritmo) no card do topo
-# - Admin pode trocar a base (upload) / demais usuários não
+# - Card do topo = RESULTADO REAL (algoritmo)
+# - Simulador de compra + nova coluna "Modelos (SKUs) a comprar" (ceil(faltante / N))
+# - Tooltips nas colunas (hover) via column_config
+# - Admin: pode subir base (na sessão); demais usuários não
 # - Botão "Gerar kits agora" + cache (não recomputa toda hora)
 # - Abas: simulador + relatórios (kits_resumo, kits_itens, estoque_restante, falha_proximo_kit)
-# - CSS: layout dark + inputs da sidebar com TEXTO ESCURO (legível)
 # =============================
 
 import re
@@ -92,27 +93,22 @@ st.markdown(
       --accent2:#7c5cff;
     }
 
-    /* App background */
     .stApp { background: radial-gradient(1200px 600px at 20% 0%, #0d1630 0%, var(--bg) 55%); }
     html, body, [class*="css"]  { color: var(--text); }
 
-    /* Hide Streamlit chrome */
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
     [data-testid="stToolbar"] {visibility: hidden; height: 0px;}
     [data-testid="stDecoration"] {display: none;}
 
-    /* Page padding */
     .block-container { padding-top: 0.85rem; padding-bottom: 2rem; }
 
-    /* Sidebar styling */
     section[data-testid="stSidebar"]{
       background: linear-gradient(180deg, #0b1220 0%, #070a0f 100%);
       border-right: 1px solid var(--border);
     }
 
-    /* Top bar (custom header) */
     .topbar{
       background: linear-gradient(90deg, rgba(90,169,255,0.18) 0%, rgba(124,92,255,0.12) 45%, rgba(0,0,0,0) 100%);
       border: 1px solid var(--border);
@@ -133,7 +129,6 @@ st.markdown(
       font-size: 13px;
     }
 
-    /* Card / metric */
     div[data-testid="stMetric"]{
       background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
       border: 1px solid var(--border);
@@ -147,7 +142,6 @@ st.markdown(
       font-weight: 800;
     }
 
-    /* Tabs */
     .stTabs [data-baseweb="tab-list"]{
       gap: 8px;
       border-bottom: 1px solid var(--border);
@@ -166,7 +160,6 @@ st.markdown(
       color: var(--text);
     }
 
-    /* Buttons */
     .stButton>button, .stDownloadButton>button{
       border-radius: 12px !important;
       border: 1px solid var(--border2) !important;
@@ -179,7 +172,6 @@ st.markdown(
       transform: translateY(-1px);
     }
 
-    /* Inputs (geral) */
     div[data-baseweb="input"] input, textarea{
       background: rgba(255,255,255,0.03) !important;
       border: 1px solid var(--border) !important;
@@ -187,7 +179,7 @@ st.markdown(
       border-radius: 12px !important;
     }
 
-    /* ====== IMPORTANT: Sidebar inputs com texto ESCURO (legível) ====== */
+    /* Sidebar inputs com texto ESCURO (legível) */
     section[data-testid="stSidebar"] div[data-baseweb="input"] input{
       color: #0b0f18 !important;
       background: rgba(255,255,255,0.90) !important;
@@ -196,10 +188,8 @@ st.markdown(
     section[data-testid="stSidebar"] div[data-baseweb="input"] input::placeholder{
       color: rgba(11,15,24,0.55) !important;
     }
-    section[data-testid="stSidebar"] label,
-    section[data-testid="stSidebar"] .stNumberInput label,
-    section[data-testid="stSidebar"] .stTextInput label{
-      color: rgba(233,238,248,0.90) !important;
+    section[data-testid="stSidebar"] label{
+      color: rgba(233,238,248,0.92) !important;
     }
     section[data-testid="stSidebar"] button[aria-label="Increment"],
     section[data-testid="stSidebar"] button[aria-label="Decrement"]{
@@ -211,7 +201,6 @@ st.markdown(
       fill: #0b0f18 !important;
     }
 
-    /* Dataframe container */
     .dataframe-shell{
       background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
       border: 1px solid var(--border);
@@ -244,11 +233,6 @@ def is_admin_logged() -> bool:
     return bool(st.session_state.get("is_admin", False))
 
 def admin_login_box():
-    # RECOMENDADO: definir via Secrets no Streamlit Cloud:
-    # ADMIN_USER="..."
-    # ADMIN_PASSWORD="..."
-    #
-    # Se não existir secrets, fica um fallback simples (troque para o que desejar)
     admin_user = st.secrets.get("ADMIN_USER", "admin")
     admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin")
 
@@ -280,13 +264,11 @@ def norm_sku(s: str) -> str:
 def assign_category(row) -> str:
     sku = row["Sku_norm"]
 
-    # Correntes por coluna
     if int(row.get("BASE_Corrente_Feminina", 0) or 0) == 1:
         return "C_FEMININO"
     if int(row.get("BASE_Corrente_Masculina", 0) or 0) == 1:
         return "C_MASCULINO"
 
-    # BR por flags
     if sku.startswith("BR"):
         if int(row.get("BASE_Trio", 0) or 0) == 1:
             return "BR_TRIO"
@@ -294,7 +276,6 @@ def assign_category(row) -> str:
             return "BR_GRANDE"
         return "BR_DEMAIS"
 
-    # Prefixos diretos
     for p in PREFIX_DIRECT:
         if sku.startswith(p):
             return p
@@ -337,11 +318,6 @@ def load_default_base_from_repo() -> tuple[pd.DataFrame, str, bytes]:
     return base, DEFAULT_BASE_PATH, b
 
 def get_active_base() -> tuple[pd.DataFrame, str, bytes]:
-    """
-    Base ativa:
-    - se admin fez upload na sessão: usa st.session_state['base_bytes']
-    - senão: usa base_ativa.xlsx do repo
-    """
     if "base_bytes" in st.session_state and st.session_state["base_bytes"]:
         b = st.session_state["base_bytes"]
         base = load_base_from_bytes(b)
@@ -351,7 +327,7 @@ def get_active_base() -> tuple[pd.DataFrame, str, bytes]:
 
 
 # =============================
-# (OPCIONAL) CAPACIDADE TEÓRICA — usado só para info de gargalo
+# CAPACIDADE TEÓRICA (diagnóstico)
 # =============================
 def by_sku_table(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby(["categoria", "Sku_norm"], as_index=False).agg(
@@ -409,7 +385,7 @@ def kits_possible_overall_correct(df: pd.DataFrame) -> tuple[int, str, pd.DataFr
 
 
 # =============================
-# SIMULADOR DE COMPRA (mantém estratégia e preço sugerido)
+# SIMULADOR DE COMPRA (com modelos por fórmula correta)
 # =============================
 def summarize_category(df: pd.DataFrame):
     bs = by_sku_table(df)
@@ -513,10 +489,28 @@ def simulator_purchase_table(df: pd.DataFrame, target_kits: int, target_min: flo
     cat["indice_faltante"] = np.where(cat["requerido_slots"] > 0, cat["falta_slots"] / cat["requerido_slots"], 0.0)
     cat["custo_reposicao"] = cat["falta_slots"] * cat["preco_sugerido_medio"]
 
+    # ==========================
+    # NOVO (CORRETO): modelos por limitação 1x por kit
+    # Cada SKU pode contribuir no máximo N unidades úteis (1 por kit).
+    # Portanto, modelos mínimos = ceil(faltante_slots / N)
+    # E unidades sugeridas por SKU = ceil(faltante / modelos), limitado a N (não agrega acima de N).
+    # ==========================
+    N = max(int(target_kits), 1)
+    cat["modelos_sku_a_comprar"] = np.ceil(cat["falta_slots"] / N).astype(int)
+
+    cat["unid_sugeridas_por_sku"] = np.where(
+        cat["modelos_sku_a_comprar"] > 0,
+        np.ceil(cat["falta_slots"] / cat["modelos_sku_a_comprar"]),
+        0
+    ).astype(int)
+    cat["unid_sugeridas_por_sku"] = np.minimum(cat["unid_sugeridas_por_sku"], N).astype(int)
+
     out = pd.DataFrame({
         "Grupo": cat["categoria"].map(lambda x: DISPLAY_NAME.get(x, x)),
         "Estoque": cat["estoque_total"].astype(int),
         "Faltante para a meta": cat["falta_slots"].astype(int),
+        "Modelos (SKUs) a comprar": cat["modelos_sku_a_comprar"].astype(int),
+        "Unid. sugeridas por SKU": cat["unid_sugeridas_por_sku"].astype(int),
         "Índice faltante por grupo": cat["indice_faltante"].astype(float),
         "Custo de reposição": cat["custo_reposicao"].astype(float),
         "Preço sugerido (de)": cat["preco_sugerido_de"].astype(float),
@@ -528,6 +522,8 @@ def simulator_purchase_table(df: pd.DataFrame, target_kits: int, target_min: flo
         "Grupo": "Total",
         "Estoque": int(out["Estoque"].sum()),
         "Faltante para a meta": int(out["Faltante para a meta"].sum()),
+        "Modelos (SKUs) a comprar": int(out["Modelos (SKUs) a comprar"].sum()),
+        "Unid. sugeridas por SKU": np.nan,
         "Índice faltante por grupo": float(out["Índice faltante por grupo"].mean()) if len(out) else 0.0,
         "Custo de reposição": float(out["Custo de reposição"].sum()),
         "Preço sugerido (de)": np.nan,
@@ -535,6 +531,7 @@ def simulator_purchase_table(df: pd.DataFrame, target_kits: int, target_min: flo
         "Estratégia de preço": "",
     }])
     out = pd.concat([out, total_row], ignore_index=True)
+
     return out, direction, float(min_cost)
 
 
@@ -567,7 +564,6 @@ def build_structures(base: pd.DataFrame):
     pools = {}
     for cat in RULES.keys():
         d = base[base["categoria"] == cat].drop_duplicates("Sku_norm").copy()
-        # VALUE-FIRST: ordena por preço, estoque como desempate
         d.sort_values(["Preco", "Estoque"], ascending=[True, True], inplace=True)
         pools[cat] = d["Sku_norm"].tolist()
 
@@ -589,7 +585,7 @@ def pick_k_skus(cat, k, used, stock, pools):
     cands = [s for s in pools[cat] if stock.get(s, 0) > 0 and s not in used]
     if len(cands) < k:
         return None
-    return cands[:k]  # mais baratos
+    return cands[:k]
 
 def pick_best_fit(cat, used, stock, pools, price, current_total, tmin, tmax):
     max_add = tmax - current_total
@@ -604,10 +600,8 @@ def pick_best_fit(cat, used, stock, pools, price, current_total, tmin, tmax):
     if not cands:
         return None
 
-    # se falta valor, tenta “encaixar” no gap
     if gap > 0:
         return min(cands, key=lambda s: abs(float(price[s]) - gap))
-    # se já passou do piso, tenta centralizar
     return min(cands, key=lambda s: objective(current_total + float(price[s]), tmin, tmax))
 
 def greedy_build(stock, pools, price, cat_of, tmin, tmax):
@@ -616,7 +610,6 @@ def greedy_build(stock, pools, price, cat_of, tmin, tmax):
     selected = []
     total = 0.0
 
-    # 1) mínimos
     for cat, (mn, mx) in RULES.items():
         pick = pick_k_skus(cat, mn, used, stock, pools)
         if pick is None:
@@ -627,7 +620,6 @@ def greedy_build(stock, pools, price, cat_of, tmin, tmax):
     if total > tmax:
         return None
 
-    # 2) completar: BR_DEMAIS e CO primeiro (ajuste fino)
     cats_order = ["BR_DEMAIS", "CO"] + [c for c in RULES.keys() if c not in ("BR_DEMAIS", "CO")]
     step = 0
     while total < tmin and step < 1200:
@@ -908,7 +900,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
             failure_info = {"kit_que_falhou": kit_id, "motivo": reason}
             break
 
-        # desconta estoque (1 por SKU usado)
         for s in best["skus"]:
             stock[s] -= 1
 
@@ -917,7 +908,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
 
     base_lookup = base.drop_duplicates("Sku_norm").set_index("Sku_norm")
 
-    # kits_itens
     rows_items = []
     for k in kits:
         for s in k["skus"]:
@@ -931,7 +921,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
             })
     kits_itens = pd.DataFrame(rows_items)
 
-    # kits_resumo
     summary_rows = []
     for k in kits:
         row = {"kit_id": k["kit_id"], "total_preco": float(k["total"]), "qtd_itens": int(len(k["skus"]))}
@@ -940,7 +929,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
         summary_rows.append(row)
     kits_resumo = pd.DataFrame(summary_rows)
 
-    # estoque_restante
     estoque_restante = (
         pd.DataFrame([{"Sku_norm": s, "Estoque_restante": q} for s, q in stock.items()])
         .merge(base[["Sku_norm", "Sku", "categoria", "Preco"]].drop_duplicates("Sku_norm"),
@@ -948,7 +936,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
         .sort_values(["categoria", "Sku_norm"])
     )
 
-    # falha_proximo_kit
     falha_df = diagnose_next_kit(stock, pools, price)
     if failure_info:
         header = pd.DataFrame([{
@@ -971,9 +958,6 @@ def generate_kits_reports(base_bytes: bytes, tmin: float, tmax: float, max_kits:
         "failure_info": failure_info,
     }
 
-# =============================
-# >>>> CONTAGEM REAL PARA O TOPO (mesmo resultado do algoritmo)
-# =============================
 @st.cache_data(show_spinner=False)
 def compute_real_kits_count(base_bytes: bytes, tmin: float, tmax: float, max_kits: int) -> int:
     reports = generate_kits_reports(base_bytes, tmin, tmax, max_kits)
@@ -992,7 +976,7 @@ with st.sidebar:
 
     st.divider()
     st.header("Simulador de compra")
-    desired_kits = st.slider("Quantidade de torres", min_value=1, max_value=500, value=5, step=1)
+    desired_kits = st.slider("Quantidade de torres", min_value=1, max_value=500, value=100, step=1)
 
     st.divider()
     st.header("Geração de kits")
@@ -1018,13 +1002,9 @@ except Exception as e:
     st.error(str(e))
     st.stop()
 
-# info de gargalo (teórico, opcional)
 kits_teorico, gargalo, _ = kits_possible_overall_correct(base_df)
-
-# >>>> REAL (o que o algoritmo efetivamente consegue montar)
 kits_real = compute_real_kits_count(base_bytes, float(target_min), float(target_max), int(max_kits))
 
-# Topbar
 c1, c2 = st.columns([2.6, 1.0])
 with c1:
     st.markdown(
@@ -1054,13 +1034,13 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Falha próximo kit"
 ])
 
-# -----------------------------
+
+# =============================
 # TAB 1 - Simulador
-# -----------------------------
+# =============================
 with tab1:
     left, right = st.columns([1.15, 2.85])
 
-    # simulador sempre recalcula (rápido)
     sim_table, _, _ = simulator_purchase_table(base_df, int(desired_kits), float(target_min), float(target_max))
 
     with left:
@@ -1116,13 +1096,75 @@ with tab1:
         )
 
         st.markdown('<div class="dataframe-shell">', unsafe_allow_html=True)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Grupo": st.column_config.TextColumn(
+                    "Grupo",
+                    help="Categoria do kit (ex.: CJ, CO, BR - OUTROS...)."
+                ),
+                "Estoque": st.column_config.NumberColumn(
+                    "Estoque",
+                    help="Estoque total disponível no grupo (somando todas as unidades do grupo)."
+                ),
+                "Faltante para a meta": st.column_config.NumberColumn(
+                    "Faltante para a meta",
+                    help=(
+                        "Quantos 'slots' de itens faltam nesse grupo para montar N kits respeitando o mínimo por kit.\n\n"
+                        "Cálculo: faltante = max(0, N*min_por_kit − Σ min(estoque_sku, N))."
+                    )
+                ),
+                "Modelos (SKUs) a comprar": st.column_config.NumberColumn(
+                    "Modelos (SKUs) a comprar",
+                    help=(
+                        "Estimativa mínima de SKUs/modelos diferentes a comprar para cobrir o faltante.\n\n"
+                        "Como 1 SKU pode aparecer no máximo 1x por kit, ao longo de N kits cada SKU contribui no máximo N unidades úteis.\n"
+                        "Cálculo (correto): ceil(faltante_slots / N)."
+                    )
+                ),
+                "Unid. sugeridas por SKU": st.column_config.NumberColumn(
+                    "Unid. sugeridas por SKU",
+                    help=(
+                        "Sugestão de unidades por SKU novo para cobrir o faltante com os modelos estimados.\n"
+                        "Cálculo: ceil(faltante_slots / modelos), limitado a N (acima de N não ajuda a meta)."
+                    )
+                ),
+                "Índice faltante por grupo": st.column_config.TextColumn(
+                    "Índice faltante por grupo",
+                    help="Percentual do mínimo necessário que está faltando: faltante / (N * min_por_kit)."
+                ),
+                "Custo de reposição": st.column_config.TextColumn(
+                    "Custo de reposição",
+                    help=(
+                        "Estimativa de custo para cobrir o faltante do grupo.\n\n"
+                        "Cálculo: custo = faltante * preço_médio_sugerido, onde preço_médio_sugerido = (de + até)/2."
+                    )
+                ),
+                "Preço sugerido (de)": st.column_config.TextColumn(
+                    "Preço sugerido (de)",
+                    help="Faixa inferior sugerida para compra (percentil do preço do grupo)."
+                ),
+                "Preço sugerido (até)": st.column_config.TextColumn(
+                    "Preço sugerido (até)",
+                    help="Faixa superior sugerida para compra (percentil do preço do grupo)."
+                ),
+                "Estratégia de preço": st.column_config.TextColumn(
+                    "Estratégia de preço",
+                    help=(
+                        "Explica por que a faixa de preço foi sugerida (baratear/encarecer/ajuste fino),\n"
+                        "considerando o impacto do grupo no custo do kit e a faixa alvo (R$ min–max)."
+                    )
+                ),
+            }
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# -----------------------------
+# =============================
 # RELATÓRIOS (gerados pelo botão)
-# -----------------------------
+# =============================
 def render_report(tab, key: str, title: str):
     with tab:
         st.subheader(title)
