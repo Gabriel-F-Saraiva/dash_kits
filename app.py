@@ -7,7 +7,7 @@ import streamlit as st
 # -----------------------------
 # CONFIG
 # -----------------------------
-st.set_page_config(page_title="Dashboard de Torres/Kits", layout="wide")
+st.set_page_config(page_title="Painel de Torres", layout="wide")
 
 TARGET_MIN_DEFAULT = 10000
 TARGET_MAX_DEFAULT = 10090
@@ -26,9 +26,46 @@ RULES = {
     "BR_GRANDE": (8, 10),
     "BR_DEMAIS": (60, None),
 }
-
 PREFIX_DIRECT = ["CJ", "CK", "CO", "ES", "PF", "SEM", "PM"]
-ADJUST_CATS = {"BR_DEMAIS", "CO"}  # categorias de "ajuste fino" no valor do kit
+ADJUST_CATS = {"BR_DEMAIS", "CO"}
+
+DISPLAY_NAME = {
+    "CJ": "CJ",
+    "CK": "CK",
+    "CO": "CO",
+    "ES": "ES",
+    "PF": "PF",
+    "SEM": "SEM",
+    "PM": "PM",
+    "C_FEMININO": "C - FEMININO",
+    "C_MASCULINO": "C - MASCULINO",
+    "BR_TRIO": "BR - TRIO",
+    "BR_GRANDE": "BR - GRANDE",
+    "BR_DEMAIS": "BR - OUTROS",
+}
+
+# -----------------------------
+# CSS (visual mais "painel")
+# -----------------------------
+st.markdown(
+    """
+    <style>
+    /* fundo */
+    .stApp { background: #0b0b0b; }
+    /* textos */
+    html, body, [class*="css"]  { color: #EDEDED; }
+    /* remove "padding" gigante do topo */
+    .block-container { padding-top: 1.0rem; }
+    /* cards / metric */
+    div[data-testid="stMetric"] { background: #121212; border: 1px solid #2a2a2a; padding: 12px; border-radius: 10px; }
+    /* dataframe */
+    .stDataFrame { background: #0b0b0b; }
+    /* separadores */
+    hr { border: 0; height: 1px; background: #2a2a2a; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # -----------------------------
 # HELPERS
@@ -39,7 +76,7 @@ def norm_sku(s: str) -> str:
 def assign_category(row) -> str:
     sku = row["Sku_norm"]
 
-    # Correntes por flags (prioridade)
+    # Correntes por flags
     if int(row.get("BASE_Corrente_Feminina", 0) or 0) == 1:
         return "C_FEMININO"
     if int(row.get("BASE_Corrente_Masculina", 0) or 0) == 1:
@@ -63,18 +100,14 @@ def assign_category(row) -> str:
 @st.cache_data(show_spinner=False)
 def load_base(file) -> pd.DataFrame:
     df = pd.read_excel(file)
-
-    # colunas obrigatórias
     for col in ["Sku", "Estoque", "Preco"]:
         if col not in df.columns:
             raise ValueError(f"A planilha precisa ter a coluna '{col}'.")
 
     df["Sku"] = df["Sku"].astype(str)
     df["Sku_norm"] = df["Sku"].apply(norm_sku)
-
     df["Estoque"] = pd.to_numeric(df["Estoque"], errors="coerce").fillna(0).astype(int)
     df["Preco"] = pd.to_numeric(df["Preco"], errors="coerce")
-
     df["categoria"] = df.apply(assign_category, axis=1)
 
     allowed = set(RULES.keys())
@@ -82,11 +115,6 @@ def load_base(file) -> pd.DataFrame:
     return df
 
 def by_sku_table(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Consolida por SKU_norm:
-    - Estoque = máximo (assumindo que SKU_norm identifica o item)
-    - Preco = mínimo (ou o preço "representativo" por SKU)
-    """
     return df.groupby(["categoria", "Sku_norm"], as_index=False).agg(
         Estoque=("Estoque", "max"),
         Preco=("Preco", "min"),
@@ -127,19 +155,18 @@ def summarize_category(df: pd.DataFrame):
     return cat, bs
 
 # -----------------------------
-# CAPACIDADE CORRETA (com repetição entre kits conforme estoque)
+# CAPACIDADE CORRETA (repetição entre kits conforme estoque)
 # -----------------------------
 def max_kits_category_from_stocks(stocks: np.ndarray, m: int) -> int:
     """
     Máximo k tal que sum(min(stocks, k)) >= k*m
-    (cada SKU pode aparecer no máximo 1x por kit, mas pode repetir em kits diferentes até acabar estoque)
     """
     stocks = np.array(stocks, dtype=int)
     stocks = stocks[stocks > 0]
     if len(stocks) < m:
         return 0
 
-    hi = int(stocks.sum() // m)  # upper bound por unidades
+    hi = int(stocks.sum() // m)
     lo = 0
 
     def feasible(k: int) -> bool:
@@ -156,10 +183,6 @@ def max_kits_category_from_stocks(stocks: np.ndarray, m: int) -> int:
     return lo
 
 def shortage_slots_for_target(stocks: np.ndarray, m: int, k: int) -> int:
-    """
-    Quantos 'usos' faltam para viabilizar k kits:
-      falta = k*m - sum(min(stocks, k))
-    """
     stocks = np.array(stocks, dtype=int)
     stocks = stocks[stocks > 0]
     have = int(np.minimum(stocks, k).sum())
@@ -176,6 +199,7 @@ def capacity_table_correct(df: pd.DataFrame) -> pd.DataFrame:
 
         rows.append({
             "categoria": cat,
+            "grupo": DISPLAY_NAME.get(cat, cat),
             "min_por_kit": mn,
             "max_por_kit": (mx if mx is not None else np.inf),
             "skus_unicos": int(sub["Sku_norm"].nunique()),
@@ -189,23 +213,19 @@ def capacity_table_correct(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     out["max_por_kit"] = out["max_por_kit"].replace([np.inf], ["∞"])
     out["gargalo"] = out["kits_max_cat"] == out["kits_max_cat"].min()
-    return out.sort_values("categoria")
+    return out.sort_values(["kits_max_cat", "grupo"], ascending=[True, True])
 
 def kits_possible_overall_correct(df: pd.DataFrame) -> tuple[int, str, pd.DataFrame]:
     t = capacity_table_correct(df)
     kits_max = int(t["kits_max_cat"].min()) if len(t) else 0
-    gargalos = t.loc[t["kits_max_cat"] == kits_max, "categoria"].tolist()
+    gargalos = t.loc[t["kits_max_cat"] == kits_max, "grupo"].tolist()
     gargalo_str = ", ".join(gargalos) if gargalos else "-"
     return kits_max, gargalo_str, t
 
 # -----------------------------
-# HEURÍSTICA DE PREÇO "INTELIGENTE"
+# PREÇO INTELIGENTE
 # -----------------------------
 def min_cost_theoretical(bs: pd.DataFrame) -> float:
-    """
-    Custo mínimo teórico do kit:
-    soma dos 'mínimos mais baratos' por categoria.
-    """
     total = 0.0
     for cat, (mn, _) in RULES.items():
         prices = bs.loc[bs["categoria"] == cat, "Preco"].sort_values().to_numpy()
@@ -215,13 +235,6 @@ def min_cost_theoretical(bs: pd.DataFrame) -> float:
     return float(total)
 
 def choose_price_band(direction: str, weight: float, is_adjust: bool):
-    """
-    direction:
-      - 'cheaper'  => mínimo teórico já está caro (precisa comprar mais barato)
-      - 'pricier'  => mínimo teórico está baixo (pode comprar mais caro pra subir valor)
-      - 'neutral'  => mínimo teórico já ok
-    weight: quanto a categoria pesa no custo do kit (0..1)
-    """
     if direction == "cheaper":
         if is_adjust:
             return ("p05", "p60", "ajuste-fino barato (P05–P60)")
@@ -238,20 +251,22 @@ def choose_price_band(direction: str, weight: float, is_adjust: bool):
             return ("p50", "p85", "subir valor com controle (P50–P85)")
         return ("p60", "p90", "subir valor (P60–P90)")
 
-    # neutral
     if is_adjust:
         return ("p10", "p90", "ajuste amplo (P10–P90)")
     return ("p25", "p75", "faixa padrão (P25–P75)")
 
-def replenishment_plan(df: pd.DataFrame, target_kits: int, target_min: float, target_max: float, sku_units_assumption: int):
+def simulator_purchase_table(df: pd.DataFrame, target_kits: int, target_min: float, target_max: float) -> tuple[pd.DataFrame, str, float]:
     """
-    Plano de reposição:
-    - usa falta_slots (métrica correta) para viabilizar N kits por categoria
-    - estima 'novos_skus' assumindo X unidades por SKU novo (default = 1 ou 2)
+    Tabela estilo "Simulador de compra":
+    - Grupo
+    - Estoque (unidades)
+    - Faltante para a meta (slots)
+    - Índice faltante por grupo
+    - Custo de reposição (estimado)
+    + preço sugerido e estratégia
     """
     cat, bs = summarize_category(df)
 
-    # direção geral baseada no custo mínimo teórico
     min_cost = min_cost_theoretical(bs)
     if np.isinf(min_cost):
         direction = "neutral"
@@ -262,152 +277,232 @@ def replenishment_plan(df: pd.DataFrame, target_kits: int, target_min: float, ta
     else:
         direction = "neutral"
 
-    # peso relativo: mediana * mínimo por kit
+    # peso relativo
     cat["contrib"] = cat["preco_med"] * cat["min_por_kit"]
     contrib_sum = float(cat["contrib"].sum()) if float(cat["contrib"].sum()) > 0 else 1.0
     cat["peso"] = cat["contrib"] / contrib_sum
 
-    # falta_slots por categoria (métrica correta)
-    slots = []
+    # falta_slots e preço sugerido
+    faltas = []
+    lo_list, hi_list, label_list = [], [], []
     for _, r in cat.iterrows():
         c = r["categoria"]
         mn = int(r["min_por_kit"])
         stocks = bs.loc[bs["categoria"] == c, "Estoque"].to_numpy(dtype=int)
-        slots.append(shortage_slots_for_target(stocks, mn, int(target_kits)))
-    cat["falta_slots"] = pd.Series(slots, index=cat.index).astype(int)
+        falta_slots = shortage_slots_for_target(stocks, mn, int(target_kits))
+        faltas.append(falta_slots)
 
-    # sugestão de "novos SKUs" se cada SKU novo vier com sku_units_assumption unidades
-    cat["novos_skus_est_1un"] = np.ceil(cat["falta_slots"] / 1.0).astype(int)
-    cat["novos_skus_est_Xun"] = np.ceil(cat["falta_slots"] / float(max(1, sku_units_assumption))).astype(int)
-
-    # faixa inteligente por categoria
-    lo_list, hi_list, label_list = [], [], []
-    for _, r in cat.iterrows():
-        is_adjust = r["categoria"] in ADJUST_CATS
+        is_adjust = c in ADJUST_CATS
         lo, hi, label = choose_price_band(direction, float(r["peso"]), is_adjust)
         lo_list.append(lo); hi_list.append(hi); label_list.append(label)
 
+    cat["falta_slots"] = pd.Series(faltas, index=cat.index).astype(int)
     cat["estrategia_preco"] = label_list
     cat["preco_sugerido_de"] = [round(float(r[f"preco_{lo}"]), 2) for r, lo in zip(cat.to_dict("records"), lo_list)]
     cat["preco_sugerido_ate"] = [round(float(r[f"preco_{hi}"]), 2) for r, hi in zip(cat.to_dict("records"), hi_list)]
+    cat["preco_sugerido_medio"] = (cat["preco_sugerido_de"] + cat["preco_sugerido_ate"]) / 2.0
 
-    out = cat[[
-        "categoria",
-        "min_por_kit", "max_por_kit",
-        "skus_unicos", "estoque_total",
-        "falta_slots",
-        "novos_skus_est_1un",
-        "novos_skus_est_Xun",
-        "preco_sugerido_de", "preco_sugerido_ate",
-        "estrategia_preco",
-    ]].copy()
+    # índice faltante (proporção)
+    cat["requerido_slots"] = int(target_kits) * cat["min_por_kit"]
+    cat["indice_faltante"] = np.where(
+        cat["requerido_slots"] > 0,
+        cat["falta_slots"] / cat["requerido_slots"],
+        0.0
+    )
 
-    out["max_por_kit"] = out["max_por_kit"].replace([np.inf], ["∞"])
-    out["impacto"] = out["falta_slots"]  # principal métrica agora
-    out = out.sort_values(["impacto", "categoria"], ascending=[False, True])
+    # custo reposição (estimado) = falta_slots * preço_sugerido_medio
+    cat["custo_reposicao"] = cat["falta_slots"] * cat["preco_sugerido_medio"]
 
-    return out, direction, min_cost
+    # montar tabela final
+    out = pd.DataFrame({
+        "Grupo": cat["categoria"].map(lambda x: DISPLAY_NAME.get(x, x)),
+        "Estoque": cat["estoque_total"].astype(int),
+        "Faltante para a meta": cat["falta_slots"].astype(int),
+        "Índice faltante por grupo": cat["indice_faltante"].astype(float),
+        "Custo de reposição": cat["custo_reposicao"].astype(float),
+        "Preço sugerido (de)": cat["preco_sugerido_de"].astype(float),
+        "Preço sugerido (até)": cat["preco_sugerido_ate"].astype(float),
+        "Estratégia de preço": cat["estrategia_preco"].astype(str),
+    })
+
+    # Ordena: quem falta mais primeiro
+    out = out.sort_values(["Faltante para a meta", "Grupo"], ascending=[False, True])
+
+    # linha total
+    total_row = pd.DataFrame([{
+        "Grupo": "Total",
+        "Estoque": int(out["Estoque"].sum()),
+        "Faltante para a meta": int(out["Faltante para a meta"].sum()),
+        "Índice faltante por grupo": float(out["Índice faltante por grupo"].mean()) if len(out) else 0.0,
+        "Custo de reposição": float(out["Custo de reposição"].sum()),
+        "Preço sugerido (de)": np.nan,
+        "Preço sugerido (até)": np.nan,
+        "Estratégia de preço": "",
+    }])
+    out = pd.concat([out, total_row], ignore_index=True)
+
+    return out, direction, float(min_cost)
+
+def df_to_excel_bytes(sheets: dict) -> bytes:
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for name, df in sheets.items():
+            df.to_excel(writer, index=False, sheet_name=name[:31])
+    bio.seek(0)
+    return bio.getvalue()
+
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+@st.cache_data(show_spinner=False)
+def read_report_workbook(file) -> dict:
+    """
+    Lê as abas do relatório gerado (kits_gerados...xlsx).
+    Retorna dict: {sheet_name: df}
+    """
+    xl = pd.ExcelFile(file)
+    out = {}
+    for sh in xl.sheet_names:
+        out[sh] = xl.parse(sh)
+    return out
 
 # -----------------------------
-# UI
+# SIDEBAR (inputs)
 # -----------------------------
-st.title("Dashboard de Torres/Kits")
-
 with st.sidebar:
-    st.header("Entrada")
-    file = st.file_uploader("Envie sua base (Excel)", type=["xlsx"])
+    st.header("Entradas")
+    base_file = st.file_uploader("Base de produtos (xlsx)", type=["xlsx"], key="base")
+    report_file = st.file_uploader("Relatório de kits gerados (xlsx) [opcional]", type=["xlsx"], key="report")
+
+    st.divider()
+    st.header("Faixa do Kit")
     target_min = st.number_input("Preço mínimo do kit", value=TARGET_MIN_DEFAULT, step=10)
     target_max = st.number_input("Preço máximo do kit", value=TARGET_MAX_DEFAULT, step=10)
 
     st.divider()
-    st.header("Planejar reposição")
-    target_kits = st.number_input("Quantos kits você quer montar?", min_value=1, value=100, step=1)
-    sku_units_assumption = st.selectbox(
-        "Suposição de compra: unidades por SKU novo",
-        options=[1, 2, 3, 5],
-        index=0
-    )
+    st.header("Simulador de compra")
+    target_kits = st.number_input("Quantidade de torres", min_value=1, value=5, step=1)
 
-if not file:
-    st.info("Faça upload do Excel para começar.")
+# -----------------------------
+# MAIN
+# -----------------------------
+if not base_file:
+    st.info("Envie a base de produtos para iniciar.")
     st.stop()
 
-df = load_base(file)
-st.caption(f"Faixa alvo do kit: R$ {float(target_min):.2f} a R$ {float(target_max):.2f}")
+base_df = load_base(base_file)
 
-col1, col2 = st.columns([1, 1])
+# Header style "painel"
+kits_max, gargalo, cap_table = kits_possible_overall_correct(base_df)
 
-# capacidade atual (CORRIGIDA)
-kits_max, gargalo, cap_table = kits_possible_overall_correct(df)
-with col1:
-    st.subheader("Capacidade atual (correta)")
-    st.metric("Kits possíveis hoje", kits_max)
-    st.write(f"**Gargalo(s):** {gargalo}")
+top_left, top_mid, top_right = st.columns([2.4, 1.2, 0.8])
+with top_left:
+    st.markdown("<h1 style='margin:0;'>PAINEL DE TORRES</h1>", unsafe_allow_html=True)
+    st.caption(f"Gargalo(s): {gargalo} | Faixa alvo: R$ {float(target_min):.2f} a R$ {float(target_max):.2f}")
+with top_mid:
+    st.metric("Quantidade de torres atualmente", kits_max)
+with top_right:
+    st.write("")
 
-    # tabela por categoria
-    view = cap_table.copy()
-    st.dataframe(view[[
-        "categoria",
-        "min_por_kit", "max_por_kit",
-        "skus_unicos", "estoque_total",
-        "kits_max_cat",
-        "preco_min", "preco_med", "preco_max",
-        "gargalo"
-    ]], use_container_width=True)
+st.markdown("<hr/>", unsafe_allow_html=True)
 
-# plano de reposição inteligente (CORRIGIDO)
-with col2:
-    st.subheader("Plano de reposição (para atingir a meta)")
-    plan, direction, min_cost = replenishment_plan(df, int(target_kits), float(target_min), float(target_max), int(sku_units_assumption))
+# Abas (simulador + relatórios)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Simulador de compra",
+    "Kits resumo",
+    "Kits itens",
+    "Estoque restante",
+    "Falha próximo kit"
+])
 
-    # diagnóstico direção do preço
-    if np.isinf(min_cost):
-        st.warning("Não foi possível calcular o custo mínimo teórico: alguma categoria não tem SKUs suficientes para os mínimos.")
-    else:
-        st.write(f"**Custo mínimo teórico (mínimos mais baratos):** R$ {min_cost:.2f}")
-        if direction == "cheaper":
-            st.error("Diagnóstico: mínimo teórico está acima do teto → **compras devem puxar mais para barato**.")
-        elif direction == "pricier":
-            st.info("Diagnóstico: mínimo teórico está abaixo do piso → **compras podem puxar mais para caro**.")
-        else:
-            st.success("Diagnóstico: mínimo teórico compatível → **faixas padrão + ajuste fino**.")
+# -----------------------------
+# TAB 1 - Simulador
+# -----------------------------
+with tab1:
+    left, right = st.columns([1.1, 2.9])
 
-    st.dataframe(plan, use_container_width=True)
+    with left:
+        st.subheader("Quantidade de Torres")
+        st.slider(" ", min_value=1, max_value=500, value=int(target_kits), step=1, key="kits_slider")
+        # sincroniza number_input e slider (streamlit não tem 2-way perfeito; usamos o slider como fonte)
+        target_kits_live = int(st.session_state.get("kits_slider", target_kits))
 
-    faltas = plan[plan["falta_slots"] > 0]
-    if len(faltas) == 0:
-        st.success("Pelos cálculos de capacidade (com estoques), você já consegue atingir a meta (pelos mínimos).")
-    else:
-        st.warning(f"Há {len(faltas)} categorias com falta para atingir {int(target_kits)} kits (pelos mínimos).")
+        st.caption("Dica: aumente/diminua e a tabela recalcula automaticamente.")
 
-    # download do plano
-    export_bytes = io.BytesIO()
-    with pd.ExcelWriter(export_bytes, engine="openpyxl") as writer:
-        plan.to_excel(writer, index=False, sheet_name="plano_reposicao")
-        cap_table.to_excel(writer, index=False, sheet_name="capacidade_por_categoria")
-    export_bytes.seek(0)
+        # Export do simulador
+        sim_table, direction, min_cost = simulator_purchase_table(
+            base_df,
+            target_kits_live,
+            float(target_min),
+            float(target_max)
+        )
 
-    st.download_button(
-        "Baixar plano (Excel)",
-        data=export_bytes,
-        file_name="plano_reposicao_kits.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        sim_xlsx = df_to_excel_bytes({"simulador_compra": sim_table})
+        st.download_button("Baixar Simulador (Excel)", data=sim_xlsx, file_name="simulador_compra.xlsx")
+        st.download_button("Baixar Simulador (CSV)", data=df_to_csv_bytes(sim_table), file_name="simulador_compra.csv")
 
-st.divider()
-st.subheader("Como ler (importante)")
-st.write("""
-### Por que agora bate com o seu gerador?
-Antes, a estimativa travava em **1** porque usava `skus_unicos // min_por_kit`, assumindo (errado) que **cada SKU só pode aparecer em 1 kit**.
+    with right:
+        st.subheader("Simulador de compra")
+        sim_table, direction, min_cost = simulator_purchase_table(
+            base_df,
+            target_kits_live,
+            float(target_min),
+            float(target_max)
+        )
 
-Agora a capacidade usa a condição correta:
-- cada SKU pode aparecer **em vários kits**, até acabar estoque
-- mas **no máximo 1 vez por kit**
-- então a capacidade por categoria é o maior `k` tal que `sum(min(estoque_sku, k)) >= k * min_por_kit`
+        # formatação visual
+        display_df = sim_table.copy()
+        # formata % e moeda
+        display_df["Índice faltante por grupo"] = display_df["Índice faltante por grupo"].apply(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "")
+        display_df["Custo de reposição"] = display_df["Custo de reposição"].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(x) else "")
+        display_df["Preço sugerido (de)"] = display_df["Preço sugerido (de)"].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(x) else "")
+        display_df["Preço sugerido (até)"] = display_df["Preço sugerido (até)"].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(x) else "")
 
-### Plano de reposição
-- **falta_slots** = quantos “usos/unidades” faltam para aquela categoria sustentar `N` kits (respeitando 1x por kit por SKU)
-- **novos_skus_est_1un** = se você comprar **1 unidade por SKU novo**, quantos SKUs novos precisa (heurística)
-- **novos_skus_est_Xun** = mesma ideia, mas assumindo X unidades por SKU novo (configurável na lateral)
-- Faixa de preço sugerida continua por percentis e “direção” (baratear/subir/neutral).
-""")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+# -----------------------------
+# Relatórios (abas 2-5)
+# -----------------------------
+report_dfs = {}
+if report_file:
+    try:
+        report_dfs = read_report_workbook(report_file)
+    except Exception as e:
+        st.error(f"Erro ao ler relatório: {e}")
+
+def render_report_tab(tab, sheet_name: str, title: str):
+    with tab:
+        st.subheader(title)
+
+        if not report_file:
+            st.info("Envie o arquivo de relatório (xlsx) na lateral para visualizar esta aba.")
+            return
+
+        if sheet_name not in report_dfs:
+            st.warning(f"A aba '{sheet_name}' não foi encontrada nesse arquivo.")
+            st.write(f"Abas encontradas: {list(report_dfs.keys())}")
+            return
+
+        df = report_dfs[sheet_name].copy()
+
+        # downloads
+        col_a, col_b, col_c = st.columns([1, 1, 2])
+        with col_a:
+            st.download_button(
+                "Baixar Excel",
+                data=df_to_excel_bytes({sheet_name: df}),
+                file_name=f"{sheet_name}.xlsx"
+            )
+        with col_b:
+            st.download_button(
+                "Baixar CSV",
+                data=df_to_csv_bytes(df),
+                file_name=f"{sheet_name}.csv"
+            )
+
+        st.dataframe(df, use_container_width=True)
+
+render_report_tab(tab2, "kits_resumo", "Kits resumo")
+render_report_tab(tab3, "kits_itens", "Kits itens")
+render_report_tab(tab4, "estoque_restante", "Estoque restante")
+render_report_tab(tab5, "falha_proximo_kit", "Falha próximo kit")
