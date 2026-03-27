@@ -259,20 +259,10 @@ def admin_login_box():
 # =============================
 # BASE PREP
 # =============================
-import unicodedata
-
 def norm_sku(s: str) -> str:
     return re.sub(r"\s+", "", str(s).strip()).upper()
 
 def normalize_colname(col: str) -> str:
-    """
-    Padroniza nome de coluna:
-    - remove acentos
-    - deixa maiúsculo
-    - troca espaços/hífens por _
-    - remove caracteres especiais
-    - colapsa múltiplos _
-    """
     col = str(col).strip()
     col = unicodedata.normalize("NFKD", col).encode("ASCII", "ignore").decode("ASCII")
     col = col.upper()
@@ -282,10 +272,6 @@ def normalize_colname(col: str) -> str:
     return col
 
 def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Renomeia colunas para nomes canônicos esperados pelo app,
-    aceitando variações de maiúsculas/minúsculas, acentos e underscores.
-    """
     df = df.copy()
 
     normalized_map = {col: normalize_colname(col) for col in df.columns}
@@ -331,9 +317,6 @@ def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def get_flag(row, *possible_cols) -> int:
-    """
-    Retorna 1/0 procurando a primeira coluna existente entre as opções.
-    """
     for col in possible_cols:
         if col in row.index:
             val = pd.to_numeric(pd.Series([row[col]]), errors="coerce").fillna(0).iloc[0]
@@ -408,6 +391,17 @@ def load_default_base_from_repo() -> tuple[pd.DataFrame, str, bytes]:
         b = f.read()
     base = load_base_from_bytes(b)
     return base, DEFAULT_BASE_PATH, b
+
+def get_active_base() -> tuple[pd.DataFrame, str, bytes]:
+    if "base_bytes" in st.session_state and st.session_state["base_bytes"]:
+        b = st.session_state["base_bytes"]
+        base = load_base_from_bytes(b)
+        name = st.session_state.get("base_name", "upload_admin.xlsx")
+        return base, name, b
+    return load_default_base_from_repo()
+
+
+
 
 # =============================
 # CAPACIDADE TEÓRICA (diagnóstico)
