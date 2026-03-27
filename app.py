@@ -30,7 +30,7 @@ TARGET_MIN_DEFAULT = 10000
 TARGET_MAX_DEFAULT = 10090
 
 RULES = {
-    "CJ": (20, 25),
+    "CJ": (15, 25),
     "CK": (8, 12),
     "CO": (20, 28),
     "ES": (2, 3),
@@ -39,7 +39,7 @@ RULES = {
     "PM": (2, 4),
     "C_FEMININO": (10, 15),
     "C_MASCULINO": (2, 4),
-    "BR_TRIO": (6, 12),
+    "BR_TRIO": (4, 12),
     "BR_GRANDE": (6, 10),
     "BR_DEMAIS": (60, None),
 }
