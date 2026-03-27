@@ -9,6 +9,7 @@
 # - Abas: simulador + relatórios (kits_resumo, kits_itens, estoque_restante, falha_proximo_kit)
 # =============================
 
+import unicodedata
 import re
 import io
 import os
