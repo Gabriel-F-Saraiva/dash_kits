@@ -258,22 +258,103 @@ def admin_login_box():
 # =============================
 # BASE PREP
 # =============================
+import unicodedata
+
 def norm_sku(s: str) -> str:
     return re.sub(r"\s+", "", str(s).strip()).upper()
+
+def normalize_colname(col: str) -> str:
+    """
+    Padroniza nome de coluna:
+    - remove acentos
+    - deixa maiúsculo
+    - troca espaços/hífens por _
+    - remove caracteres especiais
+    - colapsa múltiplos _
+    """
+    col = str(col).strip()
+    col = unicodedata.normalize("NFKD", col).encode("ASCII", "ignore").decode("ASCII")
+    col = col.upper()
+    col = re.sub(r"[ /\\\-]+", "_", col)
+    col = re.sub(r"[^A-Z0-9_]", "", col)
+    col = re.sub(r"_+", "_", col).strip("_")
+    return col
+
+def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Renomeia colunas para nomes canônicos esperados pelo app,
+    aceitando variações de maiúsculas/minúsculas, acentos e underscores.
+    """
+    df = df.copy()
+
+    normalized_map = {col: normalize_colname(col) for col in df.columns}
+
+    aliases = {
+        "Sku": {
+            "SKU"
+        },
+        "Estoque": {
+            "ESTOQUE"
+        },
+        "Preco": {
+            "PRECO"
+        },
+        "BASE_CORRENTE_FEMININA": {
+            "BASE_CORRENTE_FEMININA",
+            "BASE_CORRENTE_FEMININO",
+            "BASE_CORRENTE_FEM"
+        },
+        "BASE_CORRENTE_MASCULINA": {
+            "BASE_CORRENTE_MASCULINA",
+            "BASE_CORRENTE_MASCULINO",
+            "BASE_CORRENTE_MASC"
+        },
+        "BASE_TRIO": {
+            "BASE_TRIO"
+        },
+        "TIPO_BRINCO_GRANDE": {
+            "TIPO_BRINCO_GRANDE",
+            "TIPO_BRINCOS_GRANDE"
+        },
+    }
+
+    rename_dict = {}
+
+    for original_col, norm_col in normalized_map.items():
+        for canonical_name, possible_names in aliases.items():
+            if norm_col in possible_names:
+                rename_dict[original_col] = canonical_name
+                break
+
+    df = df.rename(columns=rename_dict)
+    return df
+
+def get_flag(row, *possible_cols) -> int:
+    """
+    Retorna 1/0 procurando a primeira coluna existente entre as opções.
+    """
+    for col in possible_cols:
+        if col in row.index:
+            val = pd.to_numeric(pd.Series([row[col]]), errors="coerce").fillna(0).iloc[0]
+            return int(val)
+    return 0
 
 def assign_category(row) -> str:
     sku = row["Sku_norm"]
 
-    if int(row.get("BASE_Corrente_Feminina", 0) or 0) == 1:
+    if get_flag(row, "BASE_CORRENTE_FEMININA") == 1:
         return "C_FEMININO"
-    if int(row.get("BASE_Corrente_Masculina", 0) or 0) == 1:
+
+    if get_flag(row, "BASE_CORRENTE_MASCULINA") == 1:
         return "C_MASCULINO"
 
     if sku.startswith("BR"):
-        if int(row.get("BASE_Trio", 0) or 0) == 1:
+        if get_flag(row, "BASE_TRIO") == 1:
             return "BR_TRIO"
-        if int(row.get("TIPO_Brinco_Grande", 0) or 0) == 1:
+
+        if get_flag(row, "TIPO_BRINCO_GRANDE") == 1:
             return "BR_GRANDE"
+
         return "BR_DEMAIS"
 
     for p in PREFIX_DIRECT:
@@ -283,9 +364,14 @@ def assign_category(row) -> str:
     return "OUTROS"
 
 def preparar_base_from_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = canonicalize_columns(df)
+
     for col in ["Sku", "Estoque", "Preco"]:
         if col not in df.columns:
-            raise ValueError(f"A planilha precisa ter a coluna '{col}'.")
+            raise ValueError(
+                f"A planilha precisa ter a coluna '{col}'. "
+                f"Colunas encontradas: {list(df.columns)}"
+            )
 
     df = df.copy()
     df["Sku"] = df["Sku"].astype(str)
@@ -297,7 +383,12 @@ def preparar_base_from_df(df: pd.DataFrame) -> pd.DataFrame:
     df["categoria"] = df.apply(assign_category, axis=1)
 
     allowed = set(RULES.keys())
-    df = df[(df["Estoque"] > 0) & (df["Preco"].notna()) & (df["categoria"].isin(allowed))].copy()
+    df = df[
+        (df["Estoque"] > 0) &
+        (df["Preco"].notna()) &
+        (df["categoria"].isin(allowed))
+    ].copy()
+
     return df
 
 @st.cache_data(show_spinner=False)
@@ -316,15 +407,6 @@ def load_default_base_from_repo() -> tuple[pd.DataFrame, str, bytes]:
         b = f.read()
     base = load_base_from_bytes(b)
     return base, DEFAULT_BASE_PATH, b
-
-def get_active_base() -> tuple[pd.DataFrame, str, bytes]:
-    if "base_bytes" in st.session_state and st.session_state["base_bytes"]:
-        b = st.session_state["base_bytes"]
-        base = load_base_from_bytes(b)
-        name = st.session_state.get("base_name", "upload_admin.xlsx")
-        return base, name, b
-    return load_default_base_from_repo()
-
 
 # =============================
 # CAPACIDADE TEÓRICA (diagnóstico)
